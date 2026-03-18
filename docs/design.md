@@ -53,7 +53,7 @@ A standalone Python package (`jupyqt`) that provides a clean, batteries-included
 | Kernel thread | InteractiveShell, wire protocol dispatcher | asyncio event loop |
 | Server thread | jupyverse (uvicorn) | asyncio/uvloop |
 
-The kernel thread and server thread could share a single asyncio loop — implementation detail to decide during development.
+The kernel's async message dispatch runs within jupyverse's anyio task group (since `Kernel.start()` is called there), so the kernel and server share the same async context. The `InteractiveShell.run_cell()` calls are synchronous and run in the kernel thread's context — the async dispatch awaits them via `anyio.to_thread.run_sync()` or similar.
 
 ## Package Structure
 
@@ -111,13 +111,15 @@ class EmbeddedJupyter:
 
 ### 2. Kernel Thread (`kernel/thread.py`)
 
-Background thread owning its own `asyncio.EventLoop`, the `InteractiveShell`, and the wire protocol dispatcher.
+Background thread owning the `InteractiveShell` and the wire protocol dispatcher.
+
+**Shell instantiation:** The `InteractiveShell` is created eagerly in `EmbeddedJupyter.__init__()` on the main thread. This allows the host app to register magics, completers, and push initial variables before `start()`. Once `start()` is called, all shell interaction moves to the kernel thread — the shell is "handed off." After `start()`, direct shell access from the main thread is not safe; use `push()` instead.
 
 Lifecycle:
-1. **Construction:** Creates the thread (not started).
-2. **Pre-start:** Shell is accessible for setup (magics, variables, config).
-3. **`start()`:** Starts the thread, creates the asyncio loop, starts the protocol dispatcher.
-4. **Running:** Processes messages from jupyverse via memory streams, executes cells.
+1. **Construction:** Creates the `InteractiveShell` on the main thread. Creates the background thread (not started).
+2. **Pre-start:** Shell is directly accessible for setup (magics, variables, config) — all on the main thread.
+3. **`start()`:** Starts the background thread. From this point, the shell belongs to the kernel thread.
+4. **Running:** Processes messages from jupyverse via memory streams, executes cells on the kernel thread.
 5. **`shutdown()`:** Cancels async tasks, stops the event loop, joins the thread.
 
 Thread-safe `push()` posts to the kernel thread's event loop via `loop.call_soon_threadsafe()`.
@@ -135,11 +137,13 @@ Does NOT use `IPKernelApp` or any ipykernel machinery.
 
 Server-side Jupyter messaging protocol over anyio memory streams.
 
-**Channels (anyio MemoryObjectStreams):**
-- `shell_in` / `shell_out` — request/reply for execution, completion, inspection
-- `control_in` / `control_out` — shutdown, interrupt
-- `iopub_out` — stdout, stderr, results, errors, status
-- `stdin_out` / `stdin_in` — for Python's `input()` in cells
+**Serialization layer:** Jupyverse's `Kernel` ABC exchanges messages as `list[bytes]` (the standard Jupyter wire format: identities, delimiter, HMAC signature, JSON-encoded header/parent_header/metadata/content, and optional binary buffers). The protocol layer must deserialize incoming `list[bytes]` into structured messages (using `feed_identities()` + `deserialize_message()` from jupyverse's `fps_kernels.kernel_driver.message` or our own implementation), dispatch to handlers, and serialize replies back to `list[bytes]` with HMAC signing. Even though there's no ZMQ network transport, the wire format and signing are required by jupyverse's `KernelServer`.
+
+**Channels (anyio streams, `list[bytes]` wire format):**
+- `shell` — `StapledObjectStream`: request/reply for execution, completion, inspection
+- `control` — `StapledObjectStream`: shutdown, interrupt
+- `iopub` — send-only from kernel's perspective (`MemoryObjectSendStream`): stdout, stderr, results, errors, status. The kernel publishes via the internal send stream; jupyverse's `KernelServer` reads from the corresponding receive stream to broadcast to WebSocket clients.
+- `stdin` — `StapledObjectStream`: for Python's `input()` in cells
 
 **Message types by implementation phase:**
 
@@ -158,31 +162,38 @@ Phase 2 — Full interactive experience:
 - `is_complete_request` — multiline input detection
 - `history_request` — history search
 - `input_request` / `input_reply` — `input()` support
-- `interrupt_request` — raise `KeyboardInterrupt` in execution
+- `interrupt_request` — raise `KeyboardInterrupt` in the kernel thread via `signal.pthread_kill()` (Linux/macOS) or `ctypes.pythonapi.PyThreadState_SetAsyncExc()` (cross-platform fallback)
 
 Phase 3 — Widgets and comms:
 - `comm_info_request`, `comm_open`, `comm_msg`, `comm_close`
 
 **Message dispatch:**
 ```python
-async def dispatch_shell(self, stream_in, stream_out):
-    async for msg in stream_in:
+async def dispatch_shell(self, channel):
+    async for raw_msg in channel:  # list[bytes]
+        msg = deserialize_message(raw_msg)
         handler = self._handlers[msg["header"]["msg_type"]]
-        await self._publish_status("busy")
+        await self._publish_status("busy", msg)
+        # Handlers may publish multiple iopub messages (stream, display_data, etc.)
+        # before returning the shell reply
         reply = await handler(msg)
-        await stream_out.send(reply)
-        await self._publish_status("idle")
+        await channel.send(serialize_message(reply))
+        await self._publish_status("idle", msg)
 ```
 
-### 5. Jupyverse Kernel Plugin (`server/plugin.py`)
+### 5. Jupyverse Kernel Integration (`server/plugin.py`)
 
-FPS plugin implementing jupyverse's `Kernel` ABC:
-- Creates anyio MemoryObjectStreams for all four channels.
-- Passes stream endpoints to the wire protocol dispatcher on the kernel thread.
+A subclass of jupyverse's `Kernel` ABC, provided to jupyverse via a custom `KernelFactory`. The factory is registered with jupyverse's `_Kernels` router via `register_kernel_factory()` (or as the `DefaultKernelFactory`).
+
+The `Kernel` subclass:
+- Owns the anyio MemoryObjectStreams for all four channels (created by the ABC).
+- In its `start()` method (called within jupyverse's anyio task group): wires the stream endpoints to the wire protocol dispatcher, which runs as async tasks in the same task group.
 - Reports kernel as always alive — refuses restart/shutdown from JupyterLab.
 - Provides kernel info (language, display name, version).
 
-Registered via `pyproject.toml` entry points.
+The `KernelFactory`:
+- Creates instances of our `Kernel` subclass on demand.
+- Ensures all kernel instances share the single `InteractiveShell` (one kernel per app).
 
 ### 6. Server Launcher (`server/launcher.py`)
 
@@ -206,14 +217,15 @@ class QtProxy:
 
     def __getattr__(self, name):
         attr = getattr(self._target, name)
-        if not callable(attr):
-            return attr
-        def caller(*args, **kwargs):
-            return self._invoke(attr, *args, **kwargs)
-        return caller
+        if callable(attr):
+            def caller(*args, **kwargs):
+                return self._invoke(attr, *args, **kwargs)
+            return caller
+        # Non-callable attributes also marshaled to main thread for thread safety
+        return self._invoke(getattr, self._target, name)
 ```
 
-**Invoker:** Posts a callable to the Qt main thread using a custom `QEvent` + `QCoreApplication.postEvent()`. A `threading.Event` blocks the kernel thread until the main thread processes the call.
+**Invoker:** Posts a callable to the Qt main thread using a custom `QEvent` + `QCoreApplication.postEvent()`. A `threading.Event` blocks the kernel thread until the main thread processes the call. All attribute access (reads and calls) is marshaled — Qt objects are not thread-safe even for reads.
 
 **Return values:** Primitives returned directly. QObject results automatically wrapped in a new `QtProxy`.
 
