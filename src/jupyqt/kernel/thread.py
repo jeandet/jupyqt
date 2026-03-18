@@ -9,9 +9,12 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from IPython.core.interactiveshell import InteractiveShell
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from IPython.core.interactiveshell import InteractiveShell
 
 T = TypeVar("T")
 
@@ -20,6 +23,7 @@ class KernelThread:
     """Background thread with its own asyncio loop for kernel execution."""
 
     def __init__(self, shell: InteractiveShell) -> None:
+        """Bind the kernel thread to the given IPython shell."""
         self._shell = shell
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -28,25 +32,31 @@ class KernelThread:
 
     @property
     def shell(self) -> InteractiveShell:
+        """The IPython shell running on this thread."""
         return self._shell
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
+        """The asyncio event loop owned by this thread, or None if not started."""
         return self._loop
 
     @property
     def thread_id(self) -> int | None:
+        """OS thread identifier, or None if the thread has not started."""
         return self._thread_id
 
     def is_alive(self) -> bool:
+        """Return True if the kernel thread is currently running."""
         return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> None:
+        """Start the kernel thread and block until its event loop is ready."""
         self._thread = threading.Thread(target=self._run, daemon=True, name="jupyqt-kernel")
         self._thread.start()
         self._started.wait(timeout=10)
 
     def stop(self) -> None:
+        """Stop the kernel thread's event loop and join the thread."""
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
@@ -68,10 +78,10 @@ class KernelThread:
             raise RuntimeError("KernelThread is not running")
         future: concurrent.futures.Future[T] = concurrent.futures.Future()
 
-        def _wrapper():
+        def _wrapper() -> None:
             try:
                 future.set_result(func(*args))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 future.set_exception(e)
 
         self._loop.call_soon_threadsafe(_wrapper)

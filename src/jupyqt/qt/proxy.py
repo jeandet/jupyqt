@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class _InvokeEvent(QEvent):
@@ -20,7 +23,8 @@ class _InvokeEvent(QEvent):
         kwargs: dict,
         result_event: threading.Event,
         result_box: list,
-    ):
+    ) -> None:
+        """Store the callable and synchronisation primitives for later execution."""
         super().__init__(self.EVENT_TYPE)
         self.func = func
         self.args = args
@@ -33,10 +37,11 @@ class _Receiver(QObject):
     """Receives _InvokeEvents and executes them on the main thread."""
 
     def event(self, event: QEvent) -> bool:
+        """Execute an _InvokeEvent's callable and store the result."""
         if isinstance(event, _InvokeEvent):
             try:
                 event.result_box[0] = event.func(*event.args, **event.kwargs)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 event.result_box[1] = e
             finally:
                 event.result_event.set()
@@ -48,9 +53,11 @@ class MainThreadInvoker:
     """Invokes callables on the Qt main thread from any thread."""
 
     def __init__(self) -> None:
+        """Create the internal QObject receiver that processes invoke events."""
         self._receiver = _Receiver()
 
     def __call__(self, func: Callable, *args: Any, **kwargs: Any) -> Any:
+        """Call func on the Qt main thread, blocking until it returns."""
         if threading.current_thread() is threading.main_thread():
             return func(*args, **kwargs)
 
@@ -69,6 +76,7 @@ class QtProxy:
     """Wraps a QObject, dispatching all access to the Qt main thread."""
 
     def __init__(self, target: Any, invoker: MainThreadInvoker) -> None:
+        """Bind the proxy to target, using invoker for main-thread dispatch."""
         object.__setattr__(self, "_target", target)
         object.__setattr__(self, "_invoke", invoker)
 

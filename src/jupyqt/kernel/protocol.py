@@ -11,13 +11,10 @@ from __future__ import annotations
 import math
 import sys
 import traceback
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-
 from IPython.core.completer import provisionalcompleter
-from IPython.core.interactiveshell import InteractiveShell
 
 from jupyqt.kernel.messages import (
     create_message,
@@ -26,7 +23,14 @@ from jupyqt.kernel.messages import (
     serialize_message,
 )
 from jupyqt.kernel.shell import OutputCapture
-from jupyqt.kernel.thread import KernelThread
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+    from IPython.core.interactiveshell import InteractiveShell
+
+    from jupyqt.kernel.thread import KernelThread
 
 
 class KernelProtocol:
@@ -38,6 +42,7 @@ class KernelProtocol:
         key: str = "0",
         kernel_thread: KernelThread | None = None,
     ) -> None:
+        """Set up the protocol handler with the given shell and optional kernel thread."""
         self._shell = shell
         self._key = key
         self._kernel_thread = kernel_thread
@@ -45,7 +50,7 @@ class KernelProtocol:
         self._iopub_send: MemoryObjectSendStream[list[bytes]]
         self._iopub_recv: MemoryObjectReceiveStream[list[bytes]]
         self._iopub_send, self._iopub_recv = anyio.create_memory_object_stream[list[bytes]](
-            max_buffer_size=math.inf
+            max_buffer_size=math.inf,
         )
         self._handlers = {
             "kernel_info_request": self._handle_kernel_info,
@@ -59,9 +64,11 @@ class KernelProtocol:
 
     @property
     def iopub_receive(self) -> MemoryObjectReceiveStream[list[bytes]]:
+        """Stream of serialized iopub messages produced by this protocol."""
         return self._iopub_recv
 
-    async def handle_message(self, channel: str, raw_msg: list[bytes]) -> list[bytes]:
+    async def handle_message(self, channel: str, raw_msg: list[bytes]) -> list[bytes]:  # noqa: ARG002
+        """Deserialize, dispatch, and serialize a Jupyter wire protocol message."""
         _, parts = feed_identities(raw_msg)
         msg = deserialize_message(parts)
         msg_type = msg["msg_type"]
@@ -128,7 +135,7 @@ class KernelProtocol:
         captured_error: dict[str, Any] | None = None
         original_showtraceback = self._shell.showtraceback
 
-        def _capture_traceback(*args, **kwargs):
+        def _capture_traceback(*_args: Any, **_kwargs: Any) -> None:
             nonlocal captured_error
             etype, evalue, tb = sys.exc_info()
             if etype is not None:
@@ -138,25 +145,25 @@ class KernelProtocol:
                     "traceback": traceback.format_exception(etype, evalue, tb),
                 }
 
-        async def _execute_async():
+        async def _execute_async() -> Any:
             self._shell.showtraceback = _capture_traceback
             capture = OutputCapture(
-                on_stdout=lambda text: stdout_chunks.append(text),
-                on_stderr=lambda text: stderr_chunks.append(text),
+                on_stdout=stdout_chunks.append,
+                on_stderr=stderr_chunks.append,
             )
             try:
                 with capture:
                     return await self._shell.run_cell_async(
-                        code, store_history=not silent, silent=silent
+                        code, store_history=not silent, silent=silent,
                     )
             finally:
                 self._shell.showtraceback = original_showtraceback
 
-        def _execute_sync():
+        def _execute_sync() -> Any:
             self._shell.showtraceback = _capture_traceback
             capture = OutputCapture(
-                on_stdout=lambda text: stdout_chunks.append(text),
-                on_stderr=lambda text: stderr_chunks.append(text),
+                on_stdout=stdout_chunks.append,
+                on_stderr=stderr_chunks.append,
             )
             try:
                 with capture:
@@ -218,7 +225,7 @@ class KernelProtocol:
             },
         )
 
-    def _run_on_shell(self, func, *args):
+    def _run_on_shell(self, func: Callable[..., Any], *args: Any) -> Any:
         """Run func on the kernel thread if available, else directly."""
         if self._kernel_thread is not None:
             return self._kernel_thread.run_sync(func, *args)
@@ -229,7 +236,7 @@ class KernelProtocol:
         code = content["code"]
         cursor_pos = content["cursor_pos"]
 
-        def _do_complete():
+        def _do_complete() -> tuple[list[str], int]:
             with provisionalcompleter():
                 completions = list(self._shell.Completer.completions(code, cursor_pos))
             matches = [c.text for c in completions]
@@ -256,7 +263,7 @@ class KernelProtocol:
         detail_level = content.get("detail_level", 0)
         name = code[:cursor_pos].split()[-1] if code[:cursor_pos].strip() else ""
 
-        def _do_inspect():
+        def _do_inspect() -> tuple[bool, dict[str, Any]]:
             try:
                 info = self._shell.object_inspect(name, detail_level=detail_level)
                 found = info.get("found", False)
@@ -271,8 +278,10 @@ class KernelProtocol:
                         text_parts.append(info["docstring"])
                     data["text/plain"] = "\n".join(text_parts) if text_parts else str(info)
                 return found, data
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return False, {}
+            else:
+                return found, data
 
         found, data = self._run_on_shell(_do_inspect)
         return create_message(
@@ -284,7 +293,7 @@ class KernelProtocol:
     async def _handle_is_complete(self, msg: dict[str, Any]) -> dict[str, Any]:
         code = msg["content"]["code"]
 
-        def _do_check():
+        def _do_check() -> tuple[str, str]:
             return self._shell.input_transformer_manager.check_complete(code)
 
         result = self._run_on_shell(_do_check)

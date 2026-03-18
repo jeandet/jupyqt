@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import secrets
 import socket
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from IPython.core.interactiveshell import InteractiveShell
+if TYPE_CHECKING:
+    from IPython.core.interactiveshell import InteractiveShell
 
-from jupyqt.kernel.thread import KernelThread
+    from jupyqt.kernel.thread import KernelThread
 
 
 def _find_free_port() -> int:
@@ -21,7 +23,7 @@ def _find_free_port() -> int:
 
 def _build_config(port: int) -> dict[str, Any]:
     """Build the fps config dict for jupyverse with our kernel module."""
-    from importlib.metadata import entry_points
+    from importlib.metadata import entry_points  # noqa: PLC0415
 
     jupyverse_modules = {
         ep.name: {"type": ep.value}
@@ -40,7 +42,7 @@ def _build_config(port: int) -> dict[str, Any]:
                 "port": port,
             },
             "modules": jupyverse_modules,
-        }
+        },
     }
 
 
@@ -54,6 +56,7 @@ class ServerLauncher:
         port: int = 0,
         token: str | None = None,
     ) -> None:
+        """Configure the server launcher with shell, optional kernel thread, port, and token."""
         self._shell = shell
         self._kernel_thread = kernel_thread
         self._port = port if port != 0 else _find_free_port()
@@ -65,38 +68,41 @@ class ServerLauncher:
 
     @property
     def port(self) -> int:
+        """The port on which the jupyverse server is listening."""
         return self._port
 
     @property
     def token(self) -> str:
+        """The authentication token for the jupyverse server."""
         return self._token
 
     @property
     def url(self) -> str:
+        """The full JupyterLab URL including the authentication token."""
         return f"http://localhost:{self._port}/lab?token={self._token}"
 
     def start(self) -> None:
+        """Launch the server thread and block until the server is ready."""
         self._thread = threading.Thread(target=self._run, daemon=True, name="jupyqt-server")
         self._thread.start()
         self._started.wait(timeout=30)
 
     def stop(self) -> None:
+        """Signal the server to stop and join the server thread."""
         if self._root_module is not None and self._loop is not None:
-            try:
+            with contextlib.suppress(RuntimeError):
                 self._loop.call_soon_threadsafe(self._root_module._exit.set)
-            except RuntimeError:
-                pass  # Event loop already closed
         if self._thread is not None:
             self._thread.join(timeout=10)
             self._thread = None
 
     def _run(self) -> None:
         """Start jupyverse via fps. Runs in the server thread."""
-        from jupyqt.server.plugin import JupyQtKernelModule
+        from jupyqt.server.plugin import JupyQtKernelModule  # noqa: PLC0415
 
         JupyQtKernelModule.set_shell(self._shell, self._kernel_thread)
 
-        import fps
+        import fps  # noqa: PLC0415
 
         config = _build_config(self._port)
         self._root_module = fps.get_root_module(config)
@@ -105,7 +111,7 @@ class ServerLauncher:
         self._root_module._start_timeout = 30
 
         # Run the module, signalling _started once the event loop is up
-        import anyio
+        import anyio  # noqa: PLC0415
 
         async def _main() -> None:
             self._loop = asyncio.get_running_loop()

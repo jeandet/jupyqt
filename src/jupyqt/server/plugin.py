@@ -8,17 +8,19 @@ creates its own streams for testing.
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
-from anyio.abc import TaskStatus
-from anyio.streams.memory import MemoryObjectReceiveStream
 from anyio.streams.stapled import StapledObjectStream
 
-from IPython.core.interactiveshell import InteractiveShell
-
 from jupyqt.kernel.protocol import KernelProtocol
-from jupyqt.kernel.thread import KernelThread
+
+if TYPE_CHECKING:
+    from anyio.abc import TaskStatus
+    from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+    from IPython.core.interactiveshell import InteractiveShell
+
+    from jupyqt.kernel.thread import KernelThread
 
 try:
     from jupyverse_kernel import DefaultKernelFactory, Kernel, KernelFactory
@@ -39,7 +41,13 @@ class JupyQtKernel:
     create_jupyqt_kernel_class().
     """
 
-    def __init__(self, shell: InteractiveShell, kernel_thread: KernelThread | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        shell: InteractiveShell,
+        kernel_thread: KernelThread | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        """Set up in-process streams and a KernelProtocol for the given shell."""
         self._shell = shell
         self.key = "0"
         self._protocol = KernelProtocol(shell, key=self.key, kernel_thread=kernel_thread)
@@ -52,7 +60,7 @@ class JupyQtKernel:
         self._to_stdin_send, self._to_stdin_recv = anyio.create_memory_object_stream[list[bytes]]()
         self._from_stdin_send, self._from_stdin_recv = anyio.create_memory_object_stream[list[bytes]]()
         self._from_iopub_send, self._from_iopub_recv = anyio.create_memory_object_stream[list[bytes]](
-            max_buffer_size=math.inf
+            max_buffer_size=math.inf,
         )
 
         self._shell_stream = StapledObjectStream(self._to_shell_send, self._from_shell_recv)
@@ -61,21 +69,26 @@ class JupyQtKernel:
 
     @property
     def shell_stream(self) -> StapledObjectStream:
+        """Stapled stream for shell-channel communication."""
         return self._shell_stream
 
     @property
     def control_stream(self) -> StapledObjectStream:
+        """Stapled stream for control-channel communication."""
         return self._control_stream
 
     @property
     def stdin_stream(self) -> StapledObjectStream:
+        """Stapled stream for stdin-channel communication."""
         return self._stdin_stream
 
     @property
     def iopub_stream(self) -> MemoryObjectReceiveStream:
+        """Receive stream for iopub messages published by the protocol."""
         return self._from_iopub_recv
 
-    async def start(self, *, task_status=_IGNORED) -> None:
+    async def start(self, *, task_status: Any = _IGNORED) -> None:
+        """Start dispatching messages; signal task_status when ready."""
         async with anyio.create_task_group() as tg:
             self._task_group = tg
             tg.start_soon(self._dispatch_channel, self._to_shell_recv, self._from_shell_send)
@@ -86,13 +99,18 @@ class JupyQtKernel:
             await anyio.sleep_forever()
 
     async def stop(self) -> None:
+        """Cancel the task group to stop all dispatch loops."""
         if self._task_group:
             self._task_group.cancel_scope.cancel()
 
     async def interrupt(self) -> None:
-        pass
+        """No-op interrupt handler."""
 
-    async def _dispatch_channel(self, recv_stream, send_stream) -> None:
+    async def _dispatch_channel(
+        self,
+        recv_stream: MemoryObjectReceiveStream,
+        send_stream: MemoryObjectSendStream,
+    ) -> None:
         async for raw_msg in recv_stream:
             reply = await self._protocol.handle_message("shell", raw_msg)
             await send_stream.send(reply)
@@ -102,7 +120,10 @@ class JupyQtKernel:
             await self._from_iopub_send.send(raw_msg)
 
 
-def create_jupyqt_kernel_class(shell: InteractiveShell, kernel_thread: KernelThread | None = None) -> type:
+def create_jupyqt_kernel_class(
+    shell: InteractiveShell,
+    kernel_thread: KernelThread | None = None,
+) -> type:
     """Create a Kernel subclass that inherits from jupyverse_kernel.Kernel.
 
     The class captures the shell and kernel_thread references via closure.
@@ -111,12 +132,14 @@ def create_jupyqt_kernel_class(shell: InteractiveShell, kernel_thread: KernelThr
         raise ImportError("jupyverse is required")
 
     class _JupyQtJupyverseKernel(Kernel):
-        def __init__(self, **kwargs: Any) -> None:
+        def __init__(self, **_kwargs: Any) -> None:
+            """Initialise the jupyverse kernel with a KernelProtocol."""
             super().__init__()
             self._protocol = KernelProtocol(shell, key=self.key, kernel_thread=kernel_thread)
             self._tg: anyio.abc.TaskGroup | None = None
 
         async def start(self, *, task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED) -> None:
+            """Start channel dispatch loops and signal task_status when ready."""
             async with anyio.create_task_group() as tg:
                 self._tg = tg
                 tg.start_soon(self._dispatch, self._to_shell_receive_stream, self._from_shell_send_stream)
@@ -127,13 +150,18 @@ def create_jupyqt_kernel_class(shell: InteractiveShell, kernel_thread: KernelThr
                 await anyio.sleep_forever()
 
         async def stop(self) -> None:
+            """Cancel the task group to stop all dispatch loops."""
             if self._tg:
                 self._tg.cancel_scope.cancel()
 
         async def interrupt(self) -> None:
-            pass
+            """No-op interrupt handler."""
 
-        async def _dispatch(self, recv_stream, send_stream) -> None:
+        async def _dispatch(
+            self,
+            recv_stream: MemoryObjectReceiveStream,
+            send_stream: MemoryObjectSendStream,
+        ) -> None:
             async for raw_msg in recv_stream:
                 reply = await self._protocol.handle_message("shell", raw_msg)
                 await send_stream.send(reply)
@@ -145,7 +173,10 @@ def create_jupyqt_kernel_class(shell: InteractiveShell, kernel_thread: KernelThr
     return _JupyQtJupyverseKernel
 
 
-def create_kernel_factory(shell: InteractiveShell, kernel_thread: KernelThread | None = None) -> Any:
+def create_kernel_factory(
+    shell: InteractiveShell,
+    kernel_thread: KernelThread | None = None,
+) -> Any:
     """Create a KernelFactory for registering with jupyverse."""
     kernel_class = create_jupyqt_kernel_class(shell, kernel_thread)
     return KernelFactory(kernel_class)
@@ -166,11 +197,17 @@ if HAS_JUPYVERSE:
         _kernel_thread: KernelThread | None = None
 
         @classmethod
-        def set_shell(cls, shell: InteractiveShell, kernel_thread: KernelThread | None = None) -> None:
+        def set_shell(
+            cls,
+            shell: InteractiveShell,
+            kernel_thread: KernelThread | None = None,
+        ) -> None:
+            """Store the shell and kernel_thread for use when jupyverse starts."""
             cls._shell = shell
             cls._kernel_thread = kernel_thread
 
         async def prepare(self) -> None:
+            """Register a DefaultKernelFactory with the FPS dependency container."""
             if self._shell is None:
                 raise RuntimeError("JupyQtKernelModule.set_shell() must be called before jupyverse starts")
             kernel_class = create_jupyqt_kernel_class(self._shell, self._kernel_thread)

@@ -24,11 +24,13 @@ def _unpack(data: bytes) -> Any:
 
 
 def feed_identities(msg_list: list[bytes]) -> tuple[list[bytes], list[bytes]]:
+    """Split a raw message list into identity frames and the message frames."""
     idx = msg_list.index(DELIM)
     return msg_list[:idx], msg_list[idx + 1:]
 
 
 def sign(parts: list[bytes], key: str) -> bytes:
+    """Return the HMAC-SHA256 signature for the given message parts."""
     h = hmac.new(key.encode("ascii"), digestmod=hashlib.sha256)
     for p in parts:
         h.update(p)
@@ -36,16 +38,18 @@ def sign(parts: list[bytes], key: str) -> bytes:
 
 
 def serialize_message(msg: dict[str, Any], key: str) -> list[bytes]:
+    """Serialize a message dict to the Jupyter wire protocol frame list."""
     parts = [
         _pack(msg["header"]),
         _pack(msg.get("parent_header", {})),
         _pack(msg.get("metadata", {})),
         _pack(msg.get("content", {})),
     ]
-    return [DELIM, sign(parts, key)] + parts + msg.get("buffers", [])
+    return [DELIM, sign(parts, key), *parts, *msg.get("buffers", [])]
 
 
 def deserialize_message(parts: list[bytes]) -> dict[str, Any]:
+    """Deserialize Jupyter wire protocol frames into a message dict."""
     header = _unpack(parts[1])
     return {
         "header": header,
@@ -65,6 +69,7 @@ def create_message(
     metadata: dict[str, Any] | None = None,
     buffers: list[bytes] | None = None,
 ) -> dict[str, Any]:
+    """Create a new Jupyter message dict with a fresh msg_id and session."""
     return {
         "header": {
             "msg_id": uuid.uuid4().hex,
