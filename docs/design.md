@@ -32,7 +32,7 @@ A standalone Python package (`jupyqt`) that provides a clean, batteries-included
 +---------------+---------------------+
                 | HTTP/WebSocket
 +---------------+---------------------+
-|  jupyverse (uvicorn + FastAPI)      |  <- background thread
+|  jupyverse (fps + anyio)            |  <- background thread
 +---------------+---------------------+
                 | anyio MemoryObjectStreams
 +---------------+---------------------+
@@ -51,9 +51,9 @@ A standalone Python package (`jupyqt`) that provides a clean, batteries-included
 |--------|------|------------|
 | Qt main thread | QApplication, all widgets, JupyterLabWidget | Qt event loop |
 | Kernel thread | InteractiveShell, wire protocol dispatcher | asyncio event loop |
-| Server thread | jupyverse (uvicorn) | asyncio/uvloop |
+| Server thread | jupyverse (fps + anyio) | asyncio (anyio.run) |
 
-The kernel's async message dispatch runs within jupyverse's anyio task group (since `Kernel.start()` is called there), so the kernel and server share the same async context. The `InteractiveShell.run_cell()` calls are synchronous and run in the kernel thread's context — the async dispatch awaits them via `anyio.to_thread.run_sync()` or similar.
+The kernel's async message dispatch runs within jupyverse's anyio task group (since `Kernel.start()` is called there), so the kernel and server share the same async context. Cell execution uses `InteractiveShell.run_cell_async()` scheduled on the kernel thread's event loop via `asyncio.run_coroutine_threadsafe()`, which enables top-level `await` in notebook cells.
 
 ## Package Structure
 
@@ -198,12 +198,12 @@ The `KernelFactory`:
 ### 6. Server Launcher (`server/launcher.py`)
 
 Manages jupyverse lifecycle:
-- Starts jupyverse with uvicorn in a background thread.
+- Starts jupyverse via fps in a background thread.
 - Configures plugins: kernel plugin + jupyterlab frontend plugin.
 - Picks a free port (or uses specified one).
 - Generates auth token for JupyterLab access.
 - Provides URL: `http://localhost:{port}/lab?token={token}`.
-- Stops uvicorn cleanly on shutdown.
+- Stops cleanly on shutdown via `root_module._exit`.
 
 ### 7. Qt Proxy (`qt/proxy.py`)
 
@@ -244,9 +244,9 @@ class QtProxy:
 - `jupyverse` — Jupyter server (with jupyterlab frontend plugin)
 - `anyio` — async streams for kernel-server communication
 - `PySide6` — Qt bindings (with WebEngine)
-- `uvicorn` — ASGI server for jupyverse
+- `anycorn` — ASGI server (used internally by fps)
 
-**Not needed:** `ipykernel`, `pyzmq`, `qasync`, `tornado`, `jupyter-server`, `jupyter-client`.
+**Not needed:** `ipykernel`, `pyzmq`, `qasync`, `tornado`, `jupyter-server`, `jupyter-client`, `uvicorn`.
 
 ## Integration with SciQLop
 
@@ -284,6 +284,13 @@ dock.addWidget(jupyter.widget())
 
 **Smoke test:**
 - Minimal PySide6 app with embedded JupyterLab, run a cell, verify output.
+
+## Examples
+
+Two example applications are provided in the `examples/` directory:
+
+- **`minimal_app.py`** — Minimal PySide6 window with embedded JupyterLab. Good for smoke testing.
+- **`demo_app.py`** — Sidebar with a counter widget, JupyterLab panel, and exposed Qt objects. Starts in a temporary directory with a pre-loaded demo notebook (`demo_notebook.ipynb`) that walks through UI interaction and async cells.
 
 ## Out of Scope (v1)
 
