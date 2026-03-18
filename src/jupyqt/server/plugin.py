@@ -174,6 +174,6 @@ if HAS_JUPYVERSE:
             if self._shell is None:
                 raise RuntimeError("JupyQtKernelModule.set_shell() must be called before jupyverse starts")
             kernel_class = create_jupyqt_kernel_class(self._shell, self._kernel_thread)
-            await self.put(DefaultKernelFactory(kernel_class))
+            self.put(DefaultKernelFactory(kernel_class))
 else:
     JupyQtKernelModule = None  # type: ignore[assignment,misc]
