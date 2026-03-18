@@ -13,9 +13,9 @@ requires-python = ">=3.10"
 keywords = []
 dynamic = ["version"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "Programming Language :: Python",
+    "Framework :: Jupyter",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
@@ -23,12 +23,16 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "Topic :: Documentation",
-    "Topic :: Software Development",
-    "Topic :: Utilities",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = [
+    "ipython>=8.0",
+    "anyio>=4.0",
+    "jupyverse[jupyterlab]>=0.14",
+    "fps-kernels>=0.11",
+    "uvicorn>=0.30",
+    "PySide6>=6.5",
+]
 
 [project.urls]
 Homepage = "https://jeandet.github.io/jupyqt"
@@ -39,9 +43,6 @@ Issues = "https://github.com/jeandet/jupyqt/issues"
 Discussions = "https://github.com/jeandet/jupyqt/discussions"
 Gitter = "https://gitter.im/jupyqt/community"
 Funding = "https://github.com/sponsors/jeandet"
-
-[project.scripts]
-jupyqt = "jupyqt.cli:main"
 
 [tool.pdm.version]
 source = "call"
@@ -83,6 +84,7 @@ ci = [
     "pytest-cov>=5.0",
     "pytest-randomly>=3.15",
     "pytest-xdist>=3.6",
+    "pytest-qt>=4.2",
     "ruff>=0.4",
     "ty>=0.0.14",
     "types-markdown>=3.6",
