@@ -927,14 +927,34 @@ class KernelProtocol:
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
 
+        # Hook into IPython's showtraceback to capture errors.
+        # InteractiveShell.run_cell() handles exceptions internally via
+        # showtraceback() instead of setting error_in_exec for most errors.
+        captured_error: dict[str, Any] | None = None
+        original_showtraceback = self._shell.showtraceback
+
+        def _capture_traceback(*args, **kwargs):
+            nonlocal captured_error
+            etype, evalue, tb = sys.exc_info()
+            if etype is not None:
+                captured_error = {
+                    "ename": etype.__name__,
+                    "evalue": str(evalue),
+                    "traceback": traceback.format_exception(etype, evalue, tb),
+                }
+
         def _execute() -> Any:
             """Runs on the kernel thread (or current thread in unit tests)."""
+            self._shell.showtraceback = _capture_traceback
             capture = OutputCapture(
                 on_stdout=lambda text: stdout_chunks.append(text),
                 on_stderr=lambda text: stderr_chunks.append(text),
             )
-            with capture:
-                return self._shell.run_cell(code, store_history=not silent, silent=silent)
+            try:
+                with capture:
+                    return self._shell.run_cell(code, store_history=not silent, silent=silent)
+            finally:
+                self._shell.showtraceback = original_showtraceback
 
         # Dispatch to the dedicated kernel thread if available,
         # otherwise run directly (for unit tests without a thread).
@@ -962,16 +982,22 @@ class KernelProtocol:
             )
             await self._iopub_send.send(serialize_message(exec_result_msg, self._key))
 
-        if result.error_in_exec is not None:
-            tb = traceback.format_exception(
-                type(result.error_in_exec), result.error_in_exec,
-                result.error_in_exec.__traceback__,
-            )
-            error_content = {
-                "status": "error",
+        # Check for errors (captured via showtraceback hook or error_in_exec)
+        error_info = captured_error
+        if error_info is None and result.error_in_exec is not None:
+            error_info = {
                 "ename": type(result.error_in_exec).__name__,
                 "evalue": str(result.error_in_exec),
-                "traceback": tb,
+                "traceback": traceback.format_exception(
+                    type(result.error_in_exec), result.error_in_exec,
+                    result.error_in_exec.__traceback__,
+                ),
+            }
+
+        if error_info is not None:
+            error_content = {
+                "status": "error",
+                **error_info,
                 "execution_count": self._execution_count,
             }
             error_msg = create_message("error", parent=msg, content=error_content)
@@ -1413,30 +1439,34 @@ def create_kernel_factory(shell: InteractiveShell, kernel_thread: KernelThread |
     return KernelFactory(kernel_class)
 
 
-class JupyQtKernelModule:
-    """FPS module that registers the jupyqt kernel factory with jupyverse.
+if HAS_JUPYVERSE:
+    from fps import Module
 
-    The shell and kernel_thread must be set via set_shell() before
-    jupyverse starts (called by ServerLauncher._run()).
-    """
+    class JupyQtKernelModule(Module):
+        """FPS module providing DefaultKernelFactory for jupyverse.
 
-    _shell: InteractiveShell | None = None
-    _kernel_thread: KernelThread | None = None
+        The shell and kernel_thread must be set via set_shell() before
+        jupyverse starts (called by ServerLauncher._run()).
+        This replaces fps_kernel_subprocess — our kernel runs in-process.
+        """
 
-    @classmethod
-    def set_shell(cls, shell: InteractiveShell, kernel_thread: KernelThread | None = None) -> None:
-        cls._shell = shell
-        cls._kernel_thread = kernel_thread
+        _shell: InteractiveShell | None = None
+        _kernel_thread: KernelThread | None = None
 
-    async def prepare(self) -> None:
-        if not HAS_JUPYVERSE or self._shell is None:
-            return
-        # Import here to avoid circular deps at module level
-        from fps import Module
-        from jupyverse_api.kernels import Kernels
-        kernels = await Module.get(Kernels)
-        factory = create_kernel_factory(self._shell, self._kernel_thread)
-        kernels.register_kernel_factory("python3", factory)
+        @classmethod
+        def set_shell(cls, shell: InteractiveShell, kernel_thread: KernelThread | None = None) -> None:
+            cls._shell = shell
+            cls._kernel_thread = kernel_thread
+
+        async def prepare(self) -> None:
+            if self._shell is None:
+                raise RuntimeError("JupyQtKernelModule.set_shell() must be called before jupyverse starts")
+            kernel_class = create_jupyqt_kernel_class(self._shell, self._kernel_thread)
+            # Provide DefaultKernelFactory so fps_kernels picks up our kernel
+            # instead of the subprocess-based default
+            await self.put(DefaultKernelFactory(kernel_class))
+else:
+    JupyQtKernelModule = None  # type: ignore[assignment,misc]
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -1567,55 +1597,57 @@ class ServerLauncher:
         self._started.wait(timeout=30)
 
     def stop(self) -> None:
-        if self._server is not None:
-            self._server.should_exit = True
+        # fps/jupyverse shutdown mechanism — may need adjustment
+        if hasattr(self, "_root_module") and self._root_module is not None:
+            # fps modules have a shutdown mechanism; the exact API
+            # depends on the fps version. This will be refined.
+            pass
         if self._thread is not None:
             self._thread.join(timeout=10)
             self._thread = None
 
     def _run(self) -> None:
-        """Start jupyverse+uvicorn. This runs in the server thread.
+        """Start jupyverse via fps. This runs in the server thread.
 
-        NOTE: The fps configuration API may need adjustment based on the
-        actual jupyverse version. This is based on akernel's integration
-        pattern. If it doesn't work, consult:
+        NOTE: The fps/jupyverse startup API may need adjustment based on
+        the actual version. This is based on studying fps and jupyverse
+        internals. If it doesn't work, consult:
         - https://github.com/davidbrochart/akernel (fps_akernel_task)
         - https://github.com/jupyter-server/jupyverse (plugins/kernels)
+        - fps source code for Module lifecycle
         """
-        import asyncio
-
-        import uvicorn
-
-        from jupyqt.server.plugin import JupyQtKernelModule, create_kernel_factory
+        from jupyqt.server.plugin import JupyQtKernelModule
 
         # Configure our kernel module with the shell and thread
-        # so the FPS plugin can create kernel instances
         JupyQtKernelModule.set_shell(self._shell, self._kernel_thread)
 
-        # Build jupyverse ASGI app via fps
-        # fps discovers plugins via entry points (registered in pyproject.toml)
+        # Start jupyverse via fps module system
+        # fps discovers plugins via entry points; our JupyQtKernelModule
+        # provides the DefaultKernelFactory, replacing kernel_subprocess.
+        # The actual startup uses fps.get_root_module() + root_module.run()
+        # which manages uvicorn internally.
         try:
-            from fps.app import create_app
+            import fps
 
-            app = create_app()
+            config = {
+                "uvicorn": {
+                    "host": "127.0.0.1",
+                    "port": self._port,
+                },
+                "auth": {
+                    "mode": "token",
+                    "token": self._token,
+                },
+            }
+            self._root_module = fps.get_root_module(config)
+            self._started.set()
+            # run() blocks until the server shuts down
+            self._root_module.run()
         except ImportError:
             raise ImportError(
                 "fps is required to run the jupyverse server. "
                 "Install jupyverse[jupyterlab]."
             )
-
-        config = uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=self._port,
-            log_level="warning",
-        )
-        self._server = uvicorn.Server(config)
-        self._started.set()
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(self._server.serve())
 ```
 
 - [ ] **Step 4: Run test**
@@ -2150,7 +2182,9 @@ git commit -m "feat: add minimal smoke test example app"
 - Task 13: Manual smoke test.
 
 ### Known risks
-1. **fps configuration API:** `create_app()` and module registration may differ from docs. akernel's `fps_akernel_task` is the reference.
+1. **fps lifecycle API:** The `fps.get_root_module()` + `root_module.run()` pattern is based on fps internals study. If the API differs, consult fps source and akernel's `fps_akernel_task`. The fps module must subclass `fps.Module` and provide `DefaultKernelFactory` via `self.put()`. This replaces the `kernel_subprocess` entry point — ensure `fps-kernel-subprocess` is excluded or overridden.
 2. **Thread handoff of InteractiveShell:** Created on main thread, used on kernel thread. Should be fine since InteractiveShell doesn't use thread-local storage, but verify.
 3. **`InteractiveShell.Completer.completions()`:** The API may vary across IPython versions. Test with IPython 8.x+.
 4. **jupyverse version compatibility:** Pin to `>=0.14` and test against latest.
+5. **InteractiveShell error handling:** `run_cell()` handles exceptions internally via `showtraceback()`. The `_capture_traceback` hook intercepts this, but edge cases (e.g., `SystemExit`, `KeyboardInterrupt`) may need special handling.
+6. **fps entry point conflicts:** The `kernel_subprocess` entry point provides a competing `DefaultKernelFactory`. Our entry point must override it — the pyproject.toml entry point name or fps config must ensure ours takes precedence. This may require excluding `fps-kernel-subprocess` from the fps config.
