@@ -25,6 +25,12 @@ jobs:
       run: uv build
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
+    - name: Install dependencies
+      run: uv sync --group docs
+    - name: Build documentation
+      run: uv run zensical build
+    - name: Deploy documentation
+      run: uv run ghp-import site -fpm 'docs: update for ${{ github.ref_name }}'
     - name: Prepare release notes
       run: uv tool run git-changelog --release-notes > release-notes.md
     - name: Create release
