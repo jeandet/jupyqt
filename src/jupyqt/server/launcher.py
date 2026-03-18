@@ -82,7 +82,10 @@ class ServerLauncher:
 
     def stop(self) -> None:
         if self._root_module is not None and self._loop is not None:
-            self._loop.call_soon_threadsafe(self._root_module._exit.set)
+            try:
+                self._loop.call_soon_threadsafe(self._root_module._exit.set)
+            except RuntimeError:
+                pass  # Event loop already closed
         if self._thread is not None:
             self._thread.join(timeout=10)
             self._thread = None

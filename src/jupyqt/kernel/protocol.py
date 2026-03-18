@@ -16,6 +16,7 @@ from typing import Any
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
+from IPython.core.completer import provisionalcompleter
 from IPython.core.interactiveshell import InteractiveShell
 
 from jupyqt.kernel.messages import (
@@ -215,7 +216,8 @@ class KernelProtocol:
         cursor_pos = content["cursor_pos"]
 
         def _do_complete():
-            completions = list(self._shell.Completer.completions(code, cursor_pos))
+            with provisionalcompleter():
+                completions = list(self._shell.Completer.completions(code, cursor_pos))
             matches = [c.text for c in completions]
             cursor_start = completions[0].start if completions else cursor_pos
             return matches, cursor_start
