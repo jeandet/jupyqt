@@ -13,10 +13,17 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def create_shell() -> InteractiveShell:
+class _JupyQTShell(InteractiveShell):
+    """InteractiveShell subclass with enable_gui no-op (Qt loop already runs)."""
+
+    def enable_gui(self, gui: str | None = None) -> None:  # noqa: ARG002
+        pass
+
+
+def create_shell() -> _JupyQTShell:
     """Create and return a fresh IPython InteractiveShell instance."""
-    InteractiveShell.clear_instance()
-    shell = InteractiveShell.instance(colors="neutral", autocall=0)
+    _JupyQTShell.clear_instance()
+    shell = _JupyQTShell.instance(colors="neutral", autocall=0)
     _activate_matplotlib_inline(shell)
     return shell
 
