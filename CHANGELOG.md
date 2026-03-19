@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [0.3.0](https://github.com/SciQLop/jupyqt/releases/tag/0.3.0) - 2026-03-19
+
+### Added
+
+- Rich display support: `display()` calls produce `display_data` iopub messages with base64-encoded binary MIME types
+- Matplotlib inline backend auto-activation with backend-aware flush hook (switching to Qt backend stops inline rendering from closing figures)
+- Matplotlib Qt backend (`module://jupyqt.matplotlib.backend`): native Qt figure windows with zoom/pan toolbar, created on the main thread via `MainThreadInvoker`
+- ipywidgets/comm protocol support: `comm_open`, `comm_msg`, `comm_close`, `comm_info_request` handlers enabling interactive widgets
+- Example apps and notebooks for matplotlib and ipywidgets
+
+### Fixed
+
+- QtProxy now recursively wraps non-callable QObject attributes
+- Matplotlib Qt backend lifecycle: proper Gcf cleanup on window close, guarded destroy() against deleted C++ objects
+
 ## [0.2.0](https://github.com/SciQLop/jupyqt/releases/tag/0.2.0) - 2026-03-19
 
 ### Added
