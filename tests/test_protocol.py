@@ -156,6 +156,54 @@ def test_is_complete_request_incomplete(protocol):
     anyio.run(main)
 
 
+def test_execute_display_data(protocol):
+    """display() calls produce display_data iopub messages."""
+    async def main():
+        msg = create_message("execute_request", content={
+            "code": "from IPython.display import display, HTML; display(HTML('<b>hi</b>'))",
+            "silent": False,
+            "store_history": True,
+            "allow_stdin": False,
+            "stop_on_error": True,
+        })
+        reply = await protocol.handle_message("shell", _make_raw(msg))
+        _, parts = feed_identities(reply)
+        parsed = deserialize_message(parts)
+        assert parsed["content"]["status"] == "ok"
+        iopub_msgs = await _collect_iopub(protocol)
+        display_msgs = [m for m in iopub_msgs if m["msg_type"] == "display_data"]
+        assert len(display_msgs) >= 1
+        assert "text/html" in display_msgs[0]["content"]["data"]
+        assert "<b>hi</b>" in display_msgs[0]["content"]["data"]["text/html"]
+
+    anyio.run(main)
+
+
+def test_execute_rich_result(protocol):
+    """Objects with rich reprs include all mime types in execute_result."""
+    async def main():
+        msg = create_message("execute_request", content={
+            "code": "from IPython.display import HTML; HTML('<em>rich</em>')",
+            "silent": False,
+            "store_history": True,
+            "allow_stdin": False,
+            "stop_on_error": True,
+        })
+        reply = await protocol.handle_message("shell", _make_raw(msg))
+        _, parts = feed_identities(reply)
+        parsed = deserialize_message(parts)
+        assert parsed["content"]["status"] == "ok"
+        iopub_msgs = await _collect_iopub(protocol)
+        result_msgs = [m for m in iopub_msgs if m["msg_type"] == "execute_result"]
+        assert len(result_msgs) == 1
+        data = result_msgs[0]["content"]["data"]
+        assert "text/html" in data
+        assert "<em>rich</em>" in data["text/html"]
+        assert "text/plain" in data
+
+    anyio.run(main)
+
+
 def test_shutdown_request(protocol):
     async def main():
         msg = create_message("shutdown_request", content={"restart": False})

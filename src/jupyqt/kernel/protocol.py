@@ -22,7 +22,8 @@ from jupyqt.kernel.messages import (
     feed_identities,
     serialize_message,
 )
-from jupyqt.kernel.shell import OutputCapture
+from jupyqt.kernel.comm import CommManager, get_comm_manager, set_current_parent, set_publish_fn
+from jupyqt.kernel.shell import DisplayCapture, OutputCapture, encode_display_data
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -47,11 +48,13 @@ class KernelProtocol:
         self._key = key
         self._kernel_thread = kernel_thread
         self._execution_count = 0
+        self._comm_manager: CommManager = get_comm_manager()
         self._iopub_send: MemoryObjectSendStream[list[bytes]]
         self._iopub_recv: MemoryObjectReceiveStream[list[bytes]]
         self._iopub_send, self._iopub_recv = anyio.create_memory_object_stream[list[bytes]](
             max_buffer_size=math.inf,
         )
+        set_publish_fn(self._publish_comm)
         self._handlers = {
             "kernel_info_request": self._handle_kernel_info,
             "execute_request": self._handle_execute,
@@ -60,6 +63,10 @@ class KernelProtocol:
             "is_complete_request": self._handle_is_complete,
             "shutdown_request": self._handle_shutdown,
             "history_request": self._handle_history,
+            "comm_info_request": self._handle_comm_info,
+            "comm_open": self._handle_comm_open,
+            "comm_msg": self._handle_comm_msg,
+            "comm_close": self._handle_comm_close,
         }
 
     @property
@@ -67,7 +74,7 @@ class KernelProtocol:
         """Stream of serialized iopub messages produced by this protocol."""
         return self._iopub_recv
 
-    async def handle_message(self, channel: str, raw_msg: list[bytes]) -> list[bytes]:  # noqa: ARG002
+    async def handle_message(self, channel: str, raw_msg: list[bytes]) -> list[bytes] | None:  # noqa: ARG002
         """Deserialize, dispatch, and serialize a Jupyter wire protocol message."""
         _, parts = feed_identities(raw_msg)
         msg = deserialize_message(parts)
@@ -87,9 +94,10 @@ class KernelProtocol:
             return serialize_message(reply, self._key)
         await self._publish_status("busy", msg)
         reply = await handler(msg)
-        serialized = serialize_message(reply, self._key)
         await self._publish_status("idle", msg)
-        return serialized
+        if reply is None:
+            return None
+        return serialize_message(reply, self._key)
 
     async def _publish_status(self, status: str, parent: dict[str, Any]) -> None:
         msg = create_message("status", parent=parent, content={"execution_state": status})
@@ -122,7 +130,15 @@ class KernelProtocol:
             },
         )
 
+    def _publish_comm(
+        self, msg_type: str, content: dict[str, Any], parent: dict[str, Any],
+    ) -> None:
+        """Publish a comm message on iopub (may be called from any thread)."""
+        msg = create_message(msg_type, parent=parent, content=content)
+        self._iopub_send.send_nowait(serialize_message(msg, self._key))
+
     async def _handle_execute(self, msg: dict[str, Any]) -> dict[str, Any]:
+        set_current_parent(msg)
         content = msg["content"]
         code = content["code"]
         silent = content.get("silent", False)
@@ -133,6 +149,7 @@ class KernelProtocol:
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
         captured_error: dict[str, Any] | None = None
+        display_capture = DisplayCapture(self._shell)
         original_showtraceback = self._shell.showtraceback
 
         def _capture_traceback(*_args: Any, **_kwargs: Any) -> None:
@@ -152,7 +169,7 @@ class KernelProtocol:
                 on_stderr=stderr_chunks.append,
             )
             try:
-                with capture:
+                with display_capture, capture:
                     return await self._shell.run_cell_async(
                         code, store_history=not silent, silent=silent,
                     )
@@ -166,7 +183,7 @@ class KernelProtocol:
                 on_stderr=stderr_chunks.append,
             )
             try:
-                with capture:
+                with display_capture, capture:
                     return self._shell.run_cell(code, store_history=not silent, silent=silent)
             finally:
                 self._shell.showtraceback = original_showtraceback
@@ -181,14 +198,27 @@ class KernelProtocol:
         if stderr_chunks:
             await self._publish_stream("stderr", "".join(stderr_chunks), msg)
 
+        for display_output in display_capture.outputs:
+            display_msg = create_message(
+                "display_data",
+                parent=msg,
+                content={
+                    "data": display_output["data"],
+                    "metadata": display_output["metadata"],
+                    "transient": display_output["transient"],
+                },
+            )
+            await self._iopub_send.send(serialize_message(display_msg, self._key))
+
         if result.result is not None and not silent:
+            format_dict, md_dict = self._shell.display_formatter.format(result.result)
             exec_result_msg = create_message(
                 "execute_result",
                 parent=msg,
                 content={
                     "execution_count": self._execution_count,
-                    "data": {"text/plain": repr(result.result)},
-                    "metadata": {},
+                    "data": encode_display_data(format_dict),
+                    "metadata": md_dict,
                 },
             )
             await self._iopub_send.send(serialize_message(exec_result_msg, self._key))
@@ -303,6 +333,29 @@ class KernelProtocol:
         if status == "incomplete":
             reply_content["indent"] = indent or ""
         return create_message("is_complete_reply", parent=msg, content=reply_content)
+
+    async def _handle_comm_info(self, msg: dict[str, Any]) -> dict[str, Any]:
+        target_name = msg["content"].get("target_name") or None
+        return create_message(
+            "comm_info_reply",
+            parent=msg,
+            content={"status": "ok", "comms": self._comm_manager.comm_info(target_name)},
+        )
+
+    async def _handle_comm_open(self, msg: dict[str, Any]) -> None:
+        set_current_parent(msg)
+        self._run_on_shell(self._comm_manager.handle_comm_open, msg)
+        return None
+
+    async def _handle_comm_msg(self, msg: dict[str, Any]) -> None:
+        set_current_parent(msg)
+        self._run_on_shell(self._comm_manager.handle_comm_msg, msg)
+        return None
+
+    async def _handle_comm_close(self, msg: dict[str, Any]) -> None:
+        set_current_parent(msg)
+        self._run_on_shell(self._comm_manager.handle_comm_close, msg)
+        return None
 
     async def _handle_shutdown(self, msg: dict[str, Any]) -> dict[str, Any]:
         restart = msg["content"].get("restart", False)

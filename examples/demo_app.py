@@ -5,6 +5,7 @@ The kernel namespace exposes the main window, a counter label,
 and helper functions to manipulate the UI from notebook cells.
 """
 
+import os
 import shutil
 import sys
 import tempfile
@@ -83,6 +84,7 @@ def main():
 
     ret = app.exec()
     jupyter.shutdown()
+    os.chdir(Path.home())
     shutil.rmtree(workdir, ignore_errors=True)
     sys.exit(ret)
 

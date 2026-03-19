@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from IPython.core.interactiveshell import InteractiveShell
 
@@ -15,7 +16,73 @@ if TYPE_CHECKING:
 def create_shell() -> InteractiveShell:
     """Create and return a fresh IPython InteractiveShell instance."""
     InteractiveShell.clear_instance()
-    return InteractiveShell.instance(colors="neutral", autocall=0)
+    shell = InteractiveShell.instance(colors="neutral", autocall=0)
+    _activate_matplotlib_inline(shell)
+    return shell
+
+
+def _activate_matplotlib_inline(shell: InteractiveShell) -> None:
+    """Activate the matplotlib inline backend if matplotlib is available.
+
+    Replaces matplotlib_inline's flush_figures hook with a backend-aware
+    version so switching to a different backend (e.g. the jupyqt Qt backend)
+    stops the hook from closing figures and rendering them inline.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("module://matplotlib_inline.backend_inline")
+        from matplotlib_inline.backend_inline import configure_inline_support, flush_figures
+        configure_inline_support(shell, backend="inline")
+
+        def _flush_if_inline() -> None:
+            if "inline" in matplotlib.get_backend().lower():
+                flush_figures()
+
+        shell.events.unregister("post_execute", flush_figures)
+        shell.events.register("post_execute", _flush_if_inline)
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+
+def encode_display_data(format_dict: dict[str, Any]) -> dict[str, Any]:
+    """Base64-encode bytes values for the Jupyter wire protocol."""
+    return {
+        mime: base64.b64encode(value).decode("ascii") if isinstance(value, bytes) else value
+        for mime, value in format_dict.items()
+    }
+
+
+class DisplayCapture:
+    """Context manager intercepting shell.display_pub.publish calls."""
+
+    def __init__(self, shell: InteractiveShell) -> None:
+        self._shell = shell
+        self._original_publish: Any = None
+        self.outputs: list[dict[str, Any]] = []
+
+    def _capture(
+        self,
+        data: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+        source: str | None = None,  # noqa: ARG002
+        *,
+        transient: dict[str, Any] | None = None,
+        update: bool = False,  # noqa: ARG002
+    ) -> None:
+        self.outputs.append({
+            "data": encode_display_data(data),
+            "metadata": metadata or {},
+            "transient": transient or {},
+        })
+
+    def __enter__(self) -> DisplayCapture:
+        self._original_publish = self._shell.display_pub.publish
+        self._shell.display_pub.publish = self._capture
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        self._shell.display_pub.publish = self._original_publish
+        return False
 
 
 class OutputCapture:

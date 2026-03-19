@@ -94,6 +94,8 @@ class QtProxy:
                 return result
 
             return caller
+        if isinstance(attr, QObject):
+            return QtProxy(attr, invoke)
         return attr
 
     def __repr__(self) -> str:

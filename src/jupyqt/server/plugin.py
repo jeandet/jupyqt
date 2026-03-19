@@ -113,7 +113,8 @@ class JupyQtKernel:
     ) -> None:
         async for raw_msg in recv_stream:
             reply = await self._protocol.handle_message("shell", raw_msg)
-            await send_stream.send(reply)
+            if reply is not None:
+                await send_stream.send(reply)
 
     async def _forward_iopub(self) -> None:
         async for raw_msg in self._protocol.iopub_receive:
@@ -164,7 +165,8 @@ def create_jupyqt_kernel_class(
         ) -> None:
             async for raw_msg in recv_stream:
                 reply = await self._protocol.handle_message("shell", raw_msg)
-                await send_stream.send(reply)
+                if reply is not None:
+                    await send_stream.send(reply)
 
         async def _forward_iopub(self) -> None:
             async for raw_msg in self._protocol.iopub_receive:

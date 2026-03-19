@@ -33,6 +33,17 @@ class EmbeddedJupyter:
         self._port = 0
         self._cwd: str | None = None
         self._started = False
+        self._setup_extensions()
+
+    def _setup_extensions(self) -> None:
+        """Configure optional integrations (matplotlib Qt backend, comm/widgets)."""
+        try:
+            from jupyqt.matplotlib.backend import set_invoker  # noqa: PLC0415
+            set_invoker(self._invoker)
+        except ImportError:
+            pass
+        from jupyqt.kernel.comm import install as install_comm  # noqa: PLC0415
+        install_comm()
 
     @property
     def shell(self) -> InteractiveShell:
