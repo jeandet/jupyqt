@@ -123,7 +123,8 @@ class ServerLauncher:
         """Launch the server thread and block until the server is ready."""
         self._thread = threading.Thread(target=self._run, daemon=True, name="jupyqt-server")
         self._thread.start()
-        self._started.wait(timeout=60)
+        if not self._started.wait(timeout=60):
+            raise TimeoutError("Server did not start within 60 seconds")
         if self._error is not None:
             raise RuntimeError("Server thread failed to start") from self._error
 
@@ -138,6 +139,7 @@ class ServerLauncher:
 
     def _run(self) -> None:
         """Start jupyverse via fps. Runs in the server thread."""
+        prev_cwd = Path.cwd()
         try:
             if self._cwd is not None:
                 os.chdir(self._cwd)
@@ -168,3 +170,5 @@ class ServerLauncher:
         except BaseException as exc:  # noqa: BLE001
             self._error = exc
             self._started.set()
+        finally:
+            os.chdir(prev_cwd)
