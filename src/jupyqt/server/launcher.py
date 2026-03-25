@@ -26,22 +26,11 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _ensure_kernelspec() -> None:
-    """Write a minimal python3 kernel spec if one doesn't already exist.
-
-    jupyqt doesn't use ipykernel, but JupyterLab's frontend needs a
-    kernel spec to be discoverable via /api/kernelspecs.
-    """
-    kernels_dir = Path(sys.prefix) / "share" / "jupyter" / "kernels" / "python3"
+def _write_kernelspec(kernels_dir: Path, spec_text: str) -> bool:
+    """Try to write kernel.json atomically. Return True on success."""
     kernel_json = kernels_dir / "kernel.json"
     if kernel_json.exists():
-        return
-    spec = {
-        "argv": [sys.executable, "-m", "jupyqt", "-f", "{connection_file}"],
-        "display_name": "Python 3 (jupyqt)",
-        "language": "python",
-    }
-    spec_text = json.dumps(spec, indent=1) + "\n"
+        return True
     try:
         kernels_dir.mkdir(parents=True, exist_ok=True)
         with open(kernel_json, "x", encoding="utf-8") as f:  # noqa: PTH123
@@ -49,10 +38,34 @@ def _ensure_kernelspec() -> None:
     except FileExistsError:
         pass
     except OSError:
+        return False
+    return True
+
+
+def _ensure_kernelspec() -> None:
+    """Write a minimal python3 kernel spec if one doesn't already exist.
+
+    jupyqt doesn't use ipykernel, but JupyterLab's frontend needs a
+    kernel spec to be discoverable via /api/kernelspecs.  Tries sys.prefix
+    first, falls back to the user Jupyter data dir if that isn't writable.
+    """
+    spec = {
+        "argv": [sys.executable, "-m", "jupyqt", "-f", "{connection_file}"],
+        "display_name": "Python 3 (jupyqt)",
+        "language": "python",
+    }
+    spec_text = json.dumps(spec, indent=1) + "\n"
+    prefix_dir = Path(sys.prefix) / "share" / "jupyter" / "kernels" / "python3"
+    if _write_kernelspec(prefix_dir, spec_text):
+        return
+    from jupyter_core.paths import jupyter_data_dir  # noqa: PLC0415
+
+    user_dir = Path(jupyter_data_dir()) / "kernels" / "python3"
+    if not _write_kernelspec(user_dir, spec_text):
         logging.getLogger(__name__).warning(
-            "Could not write kernelspec to %s — kernelspecs may be unavailable",
-            kernel_json,
-            exc_info=True,
+            "Could not write kernelspec to %s or %s — kernelspecs may be unavailable",
+            prefix_dir / "kernel.json",
+            user_dir / "kernel.json",
         )
 
 
