@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [0.4.0](https://github.com/SciQLop/jupyqt/releases/tag/0.4.0) - 2026-03-25
+
+### Added
+
+- Kernel interrupt support (`interrupt_request` handler)
+- `input()` / stdin support for interactive prompts
+- Non-blocking kernel dispatch (execute requests no longer block the Qt event loop)
+- Auto-create python3 kernel spec so JupyterLab finds a kernel on all OSes, with fallback to user Jupyter data dir when `sys.prefix` isn't writable
+
+### Fixed
+
+- Server startup timeout now raises `TimeoutError` instead of silently proceeding
+- Server thread restores working directory after shutdown (`os.chdir` is process-wide)
+- Bumped `PySide6>=6.8` (6.5 segfaults on Python 3.12+)
+- Bumped `ipython>=8.14` / `>=9.2` (Python 3.14 compatibility)
+- CI: install `libegl1` on Linux, use `QT_QPA_PLATFORM=offscreen`, drop Python 3.15-dev
+- Resolved pre-existing ruff lint and ty type checker errors
+
 ## [0.3.1](https://github.com/SciQLop/jupyqt/releases/tag/0.3.1) - 2026-03-19
 
 ### Fixed
