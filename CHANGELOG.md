@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [0.4.1](https://github.com/SciQLop/jupyqt/releases/tag/0.4.1) - 2026-04-05
+
+### Fixed
+
+- Crash on macOS when creating a QWebEngineProfile — use the default profile instead of constructing a new one, which triggers a fatal assertion in Chromium's ProfileAdapter on Qt 6.10
+
 ## [0.4.0](https://github.com/SciQLop/jupyqt/releases/tag/0.4.0) - 2026-03-25
 
 ### Added
