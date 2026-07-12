@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [0.6.2](https://github.com/jeandet/jupyqt/releases/tag/0.6.2) - 2026-07-12
+
+<small>[Compare with 0.6.1](https://github.com/jeandet/jupyqt/compare/0.6.1...0.6.2)</small>
+
+### Bug Fixes
+
+- cancel the download when the save-file dialog is dismissed ([f0690e5](https://github.com/jeandet/jupyqt/commit/f0690e5f996f3046a26772a124a5df652a266bfa) by Alexis Jeandet).
+- pass get_content as keyword to satisfy ruff FBT003 ([c27c610](https://github.com/jeandet/jupyqt/commit/c27c6105cf0737e8727448b76c65184befd4816b) by Alexis Jeandet).
+- assemble chunked file-browser uploads instead of overwriting ([c98c75e](https://github.com/jeandet/jupyqt/commit/c98c75e0347f098624ef4b5f72d319edf04842d4) by Alexis Jeandet).
+
 ## [0.6.1](https://github.com/jeandet/jupyqt/releases/tag/0.6.1) - 2026-06-25
 
 <small>[Compare with 0.6.0](https://github.com/jeandet/jupyqt/compare/0.6.0...0.6.1)</small>
