@@ -271,3 +271,50 @@ def test_handle_message_returns_error_reply_on_handler_exception(protocol):
         assert "kaboom" in parsed["content"]["evalue"]
 
     anyio.run(main)
+
+
+def test_execute_on_kernel_thread_passes_transformed_cell(shell):
+    """``run_cell_async`` must be called with an explicit ``transformed_cell``.
+
+    IPython 9.16 removed the implicit ``transform_cell`` fallback (deprecated
+    since 7.17) and now raises ``TypeError`` when ``transformed_cell`` is None,
+    which kills the kernel on the first execute.
+    """
+    from jupyqt.kernel.thread import KernelThread
+
+    recorded = {}
+    original = shell.run_cell_async
+
+    async def spy(raw_cell, **kwargs):
+        recorded.update(kwargs)
+        recorded["raw_cell"] = raw_cell
+        return await original(raw_cell, **kwargs)
+
+    shell.run_cell_async = spy
+
+    kt = KernelThread(shell)
+    kt.start()
+    try:
+        protocol = KernelProtocol(shell, key="0", kernel_thread=kt)
+
+        async def main():
+            msg = create_message("execute_request", content={
+                "code": "y = 6 * 7",
+                "silent": False,
+                "store_history": True,
+                "allow_stdin": False,
+                "stop_on_error": True,
+            })
+            reply = await protocol.handle_message("shell", _make_raw(msg))
+            assert reply is not None
+            _, parts = feed_identities(reply)
+            parsed = deserialize_message(parts)
+            assert parsed["content"]["status"] == "ok"
+            assert shell.user_ns["y"] == 42
+
+        anyio.run(main)
+    finally:
+        kt.stop()
+
+    assert recorded.get("transformed_cell") is not None
+    assert recorded["transformed_cell"] == shell.transform_cell(recorded["raw_cell"])

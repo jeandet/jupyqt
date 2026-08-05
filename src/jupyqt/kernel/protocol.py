@@ -48,6 +48,20 @@ def _get_version() -> str:
         return "0.0.0"
 
 
+def _transform_cell(shell: Any, code: str) -> tuple[str, Any]:
+    """Pre-transform a cell for ``run_cell_async``.
+
+    IPython 9.16 removed the implicit ``transform_cell`` call (deprecated since
+    7.17) and raises ``TypeError`` when ``transformed_cell`` is None. A failing
+    transform (e.g. a syntax error in a magic) is reported through
+    ``preprocessing_exc_tuple`` rather than propagating out of the kernel.
+    """
+    try:
+        return shell.transform_cell(code), None
+    except Exception:  # noqa: BLE001
+        return code, sys.exc_info()
+
+
 class KernelProtocol:
     """Handles Jupyter wire protocol messages using an InteractiveShell."""
 
@@ -256,9 +270,14 @@ class KernelProtocol:
                 on_stderr=stderr_chunks.append,
             )
             try:
+                transformed_cell, preprocessing_exc_tuple = _transform_cell(self._shell, code)
                 with display_capture, capture:
                     return await self._shell.run_cell_async(
-                        code, store_history=not silent, silent=silent,
+                        code,
+                        store_history=not silent,
+                        silent=silent,
+                        transformed_cell=transformed_cell,
+                        preprocessing_exc_tuple=preprocessing_exc_tuple,
                     )
             finally:
                 self._shell.showtraceback = original_showtraceback  # ty: ignore[invalid-assignment]
