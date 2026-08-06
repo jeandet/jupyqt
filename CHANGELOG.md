@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
 <!-- insertion marker -->
+## [0.6.3](https://github.com/jeandet/jupyqt/releases/tag/0.6.3) - 2026-08-06
+
+<small>[Compare with 0.6.2](https://github.com/jeandet/jupyqt/compare/0.6.2...0.6.3)</small>
+
+### Bug Fixes
+
+- pass transformed_cell to run_cell_async ([078e572](https://github.com/jeandet/jupyqt/commit/078e572385843b8036aab5570f6d284d7b6d8699) by Alexis Jeandet). Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>, [Claude-Session](https://claude.ai/code/session_01FMkJCUTBBSJvvhcBUYFb6r)
+
 ## [0.6.2](https://github.com/jeandet/jupyqt/releases/tag/0.6.2) - 2026-07-12
 
 <small>[Compare with 0.6.1](https://github.com/jeandet/jupyqt/compare/0.6.1...0.6.2)</small>
