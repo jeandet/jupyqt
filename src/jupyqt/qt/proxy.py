@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, SignalInstance
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -72,8 +72,35 @@ class MainThreadInvoker:
         return result_box[0]
 
 
+def unwrap(obj: Any) -> Any:
+    """Return the object a QtProxy stands for, or obj itself if not proxied."""
+    if isinstance(obj, QtProxy):
+        return object.__getattribute__(obj, "_target")
+    return obj
+
+
+def _wrap(value: Any, invoke: MainThreadInvoker) -> Any:
+    """Proxy a QObject, recursing into the containers Qt methods commonly return."""
+    if isinstance(value, QObject):
+        return QtProxy(value, invoke)
+    if isinstance(value, (list, tuple, set)):
+        return type(value)(_wrap(v, invoke) for v in value)
+    if isinstance(value, dict):
+        return {k: _wrap(v, invoke) for k, v in value.items()}
+    return value
+
+
 class QtProxy:
-    """Wraps a QObject, dispatching all access to the Qt main thread."""
+    """Wraps a QObject, dispatching all access to the Qt main thread.
+
+    QObjects reachable through the proxy are proxied in turn, including those
+    returned inside a list, tuple, set or dict — `app.topLevelWidgets()[0]` is
+    otherwise a raw widget, and calling it from the kernel thread aborts the
+    process.
+
+    Only attribute access is marshaled: dunder protocols (`len(obj)`, `obj[i]`)
+    reach the target directly and are not thread-safe.
+    """
 
     def __init__(self, target: Any, invoker: MainThreadInvoker) -> None:
         """Bind the proxy to target, using invoker for main-thread dispatch."""
@@ -85,18 +112,23 @@ class QtProxy:
         target = object.__getattribute__(self, "_target")
 
         attr = invoke(getattr, target, name)
+        if isinstance(attr, SignalInstance):
+            return attr  # callable, but Qt already marshals queued connections
         if callable(attr):
 
             def caller(*args: Any, **kwargs: Any) -> Any:
-                result = invoke(attr, *args, **kwargs)
-                if isinstance(result, QObject):
-                    return QtProxy(result, invoke)
-                return result
+                args = tuple(unwrap(a) for a in args)
+                kwargs = {k: unwrap(v) for k, v in kwargs.items()}
+                return _wrap(invoke(attr, *args, **kwargs), invoke)
 
             return caller
-        if isinstance(attr, QObject):
-            return QtProxy(attr, invoke)
-        return attr
+        return _wrap(attr, invoke)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Assign on the target from the main thread, not on the proxy itself."""
+        invoke = object.__getattribute__(self, "_invoke")
+        target = object.__getattribute__(self, "_target")
+        invoke(setattr, target, name, unwrap(value))
 
     def __repr__(self) -> str:
         target = object.__getattribute__(self, "_target")
